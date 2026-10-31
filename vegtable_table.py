@@ -72,20 +72,73 @@ def log(tag, message):
 # 2. Structured schemas
 # =====================================================
 
+#Task	What the user wants
+#Plan	Which tasks need to be completed
+#ToolSelection	Which tool should run next
+#ToolArguments	What inputs that tool receives
+
+#Task is a validated description of what the agent should do.
+#It does not perform searches or generate answers itself.
+"""
+{
+    "ingredients": ["tomato", "potato"],
+    "kind": "dish",
+    "count": 2,
+    "related_dish_task": None,
+}
+"""
 class Task(BaseModel):
     ingredients: list[str] = Field(min_length=1)
     kind: Literal["property", "dish"]
     count: int = Field(ge=1, le=20)
-
     # Used for properties of a dish requested in another task.
     related_dish_task: Optional[int] = None
 
+#This is a required list of Task objects.
+#Each task describes one action for your vegetable agent.
+#Example:“Give me two properties of garlic and three dishes using tomato.” becomes:
+"""
+plan = Plan(
+    tasks=[
+        Task(
+            ingredients=["garlic"],
+            kind="property",
+            count=2,
+        ),
+        Task(
+            ingredients=["tomato"],
+            kind="dish",
+            count=3,
+        ),
+    ]
+)
+"""
 
 class Plan(BaseModel):
     tasks: list[Task]
     clarification: Optional[str] = None
 
+#This code defines a Pydantic model called ToolArguments.
+#It describes the inputs passed to a tool—what to search for,
+#how many results are needed, and what has already been found.
+"""
+Suppose the user requests four tomato dishes, but the database provides only two.
+arguments = ToolArguments(
+    ingredients=["tomato"],
+    kind="dish",
+    count=4,
+    existing=[
+        "Tomato soup",
+        "Tomato salad",
+    ],
+    context=[
+        "The database returned two dishes.",
+        "Find 2 additional dishes without repeating existing results.",
+    ],
+    attempt=0,
+)
 
+"""
 class ToolArguments(BaseModel):
     ingredients: list[str] = Field(min_length=1)
     kind: Literal["property", "dish"]
@@ -95,7 +148,16 @@ class ToolArguments(BaseModel):
     context: list[str] = Field(default_factory=list)
     attempt: int = Field(default=0, ge=0)
 
-
+#This code defines a Pydantic model called ToolSelection.
+#It represents which tool the agent chooses and why.
+"""
+selection = ToolSelection(
+    tool_name="search_internet",
+    reason="The database contains only one garlic property, but the user requested two.",
+)
+Unlike tool_name, reason has no predefined choices.
+Any string is accepted, including an empty string.
+"""
 class ToolSelection(BaseModel):
     tool_name: Literal[
         "search_database",
@@ -105,13 +167,41 @@ class ToolSelection(BaseModel):
     reason: str
 
 
+#GeneratedItem stores one result and its optional supporting URL.
+#Source-specific requirements must be enforced elsewhere in your agent.
+#All 3 below cases are valid.    
+"""
+1.GeneratedItem(text="Tomato soup")
+
+2.GeneratedItem(
+    text="Tomato soup",
+    evidence_url=None,
+)
+
+3.GeneratedItem(
+    text="Tomato soup",
+    evidence_url="https://example.com/tomato-soup",
+)
+"""
+
 class GeneratedItem(BaseModel):
     text: str = Field(min_length=1)
 
     # Required by application validation for internet items.
     evidence_url: Optional[str] = None
 
-
+#For example for 2 dishes with Tomato
+"""
+result = GeneratedItems(
+    items=[
+        GeneratedItem(text="Tomato soup"),
+        GeneratedItem(
+            text="Tomato salad",
+            evidence_url="https://example.com/tomato-salad",
+        ),
+    ]
+)
+"""
 class GeneratedItems(BaseModel):
     items: list[GeneratedItem]
 
@@ -119,7 +209,17 @@ class GeneratedItems(BaseModel):
 # =====================================================
 # 3. Structured model calls
 # =====================================================
-
+#schema: The Pydantic model describing the expected response,
+#such as GeneratedItems.
+#instruction: Instructions explaining what the model should do.
+#payload: Input data the model should process.
+"""
+result = ask_json(
+    schema=GeneratedItems,
+    instruction="Return two dishes made with the given vegetable.",
+    payload={"vegetable": "tomato", "count": 2},
+)
+"""
 def ask_json(schema, instruction, payload):
     """
     Request schema-constrained JSON and validate it.
@@ -182,7 +282,14 @@ def canonical_ingredient(name):
 
     return name.strip()
 
-
+"""
+arguments = {
+    "task": "dish",
+    "ingredients": ["tomato", "garlic"],
+    "count": 2,
+    "existing_items": ["Tomato and garlic soup"],
+}
+"""
 def generate_items(arguments, web_results=None):
     using_web = web_results is not None
 
@@ -234,6 +341,27 @@ Return fewer items if you are uncertain.
 # 5. Tools and their schemas
 # =====================================================
 
+#@tool This is a decorator that turns the function
+#directly below it into a LangChain tool and defines
+#the tool’s expected inputs.
+#args_schema=ToolArguments
+#It tells LangChain to use ToolArguments as the input schema.
+
+#ingredients	Ingredients to look up
+#kind	Whether to retrieve properties or dishes
+#count	Maximum number of items to return
+#existing	Items already returned, which should not be repeated
+#context	Related context, such as a dish being discussed
+#attempt	Not used in this function
+#-> dict	Indicates that the function returns a dictionary
+
+"""
+result = search_database.invoke({
+    "ingredients": ["tomato"],
+    "kind": "dish",
+    "count": 2,
+})
+"""
 @tool(args_schema=ToolArguments)
 def search_database(
     ingredients: list[str],
@@ -444,10 +572,13 @@ def initial_state(question):
     }
 
 
+#state["tasks"] gets the list of tasks.
+#state["task_index"] gets the index of the current task.
+#state["tasks"][state["task_index"]] selects that task from the list.
 def current_task(state):
     return state["tasks"][state["task_index"]]
 
-
+#This function calculates how many more answers are needed for the current task.
 def missing_count(state):
     task = current_task(state)
     existing = state["answers"].get(state["task_index"], [])
@@ -501,6 +632,33 @@ Output:
 ],"clarification":null}
 """
 
+#An example what this function return.
+"""
+{
+    "tasks": [
+        {
+            "ingredients": ["tomato"],
+            "kind": "dish",
+            "count": 2,
+            "related_dish_task": None,
+        },
+        {
+            "ingredients": ["garlic"],
+            "kind": "property",
+            "count": 3,
+            "related_dish_task": None,
+        },
+    ],
+    "answers": {
+        0: [],  # Answers for the tomato dishes task
+        1: [],  # Answers for the garlic properties task
+    },
+    "task_index": 0,
+    "source_index": 0,
+    "attempt": 0,
+    "decision": "CONTINUE",
+}
+"""
 
 def plan_node(state):
     log("PLAN", "Converting the request into structured tasks.")
@@ -581,6 +739,14 @@ def plan_node(state):
 # =====================================================
 # 8. Choose -> Act -> Observe -> Evaluate
 # =====================================================
+"""
+SOURCE_ORDER = [
+    "search_database",
+    "search_internet",
+    "use_model_knowledge",
+]
+"""
+#If state["source_index"] is 0, the permitted tool is "search_database".
 
 def choose_node(state):
     expected_tool = SOURCE_ORDER[state["source_index"]]
@@ -617,6 +783,18 @@ Briefly state the operational reason. Do not provide hidden reasoning.
     return {"selected_tool": expected_tool}
 
 
+
+#If act_node work properly  last result will be like this ==>
+"""
+{
+    "last_result": {
+        "items": [
+            {"text": "Tomato soup", "source": "database"},
+            {"text": "Tomato salad", "source": "database"},
+        ]
+    }
+}
+"""
 def act_node(state):
     task = current_task(state)
     index = state["task_index"]
@@ -666,7 +844,11 @@ def act_node(state):
 
     return {"last_result": result}
 
-
+#[OBSERVE] Accepted: Tomato salad | Source: internet
+#[OBSERVE] Collected 2/2 item(s).
+#choose_node → Select the tool
+#act_node    → Execute the tool
+#observe_node → Collect its new answers
 def observe_node(state):
     answers = {
         index: list(items)
@@ -710,7 +892,23 @@ def observe_node(state):
 
     return {"answers": answers}
 
+#Stage	                    Total collected	        Evaluation
+#Database	                1/3	                Move to internet
+#Internet, first attempt	2/3	                Retry internet
+#Internet, retry	        2/3	                Move to model knowledge
+#Model knowledge	        3/3	                Finish task
 
+#SOURCE_ORDER = ["database", "internet", "model"]
+
+"""
+state["tasks"] = [
+    {"vegetable": "tomato", "type": "dish", "count": 2},
+    {"vegetable": "garlic", "type": "property", "count": 2},
+]
+"""
+#task_index	    Current task
+#    0	        Find 2 tomato dishes
+#    1	        Find 2 garlic properties
 def evaluate_node(state):
     remaining = missing_count(state)
 
@@ -718,6 +916,8 @@ def evaluate_node(state):
         task_finished = True
         reason = "Requested item count reached."
 
+        
+    #Internet results are insufficient: retry once
     elif state["source_index"] == 1 and state["attempt"] == 0:
         log("EVALUATE", f"RETRY: still missing {remaining} item(s).")
         return {
